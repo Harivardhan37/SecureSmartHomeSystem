@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="760" viewBox="0 0 1100 760" role="img" aria-labelledby="title desc">
+  <title id="title">smarthome-v2 protocol message sequence diagrams</title>
+  <desc id="desc">Identity-hiding handshake between peer and controller, and the signed command exchange between user, controller and device.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+    .heading { font-size: 21px; font-weight: 700; }
+    .actor { font-size: 16px; font-weight: 650; }
+    .msg { font-size: 14px; }
+    .note { font-size: 12px; fill: #43516b; }
+    .key { font-size: 12px; fill: #8a3b12; font-weight: 600; }
+    .line { stroke: #65748b; stroke-width: 1.5; stroke-dasharray: 5 5; }
+    .arrow { stroke: #1e5aa8; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .box { fill: #f3f6fb; stroke: #bbc7d8; }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#1e5aa8"/>
+    </marker>
+  </defs>
+  <rect width="1100" height="760" fill="#ffffff"/>
+
+  <text x="32" y="38" class="heading">1. Identity-hiding handshake (each user/device connects independently)</text>
+  <text x="130" y="75" class="actor">Peer (pins S)</text>
+  <text x="498" y="75" class="actor">Controller (s)</text>
+  <line x1="165" y1="90" x2="165" y2="300" class="line"/>
+  <line x1="540" y1="90" x2="540" y2="300" class="line"/>
+  <path d="M170 117 L532 117" class="arrow"/>
+  <text x="180" y="109" class="msg">1. HELLO: N_p, X, Enc_es(role‖id)  (fixed size)</text>
+  <path d="M532 162 L170 162" class="arrow"/>
+  <text x="218" y="154" class="msg">2. CHALLENGE: N_c, Y   (no MAC)</text>
+  <path d="M170 207 L532 207" class="arrow"/>
+  <text x="205" y="199" class="msg">3. FINISH: MAC(mac_peer, "PEER", th)</text>
+  <path d="M532 252 L170 252" class="arrow"/>
+  <text x="180" y="244" class="msg">4. READY (AEAD): MAC(mac_ctrl, "CTRL", th), time</text>
+  <text x="180" y="283" class="note">Peer proves first → no offline PIN oracle; READY proves K and s.</text>
+  <rect x="600" y="98" width="468" height="190" rx="10" class="box"/>
+  <text x="618" y="124" class="key">es = DH(x, S);   ee = DH(x, Y)</text>
+  <text x="618" y="146" class="key">th = H(role, id, N_p, X, idct, N_c, Y)</text>
+  <text x="618" y="168" class="key">keys = HKDF(K ‖ es ‖ ee, N_p‖N_c, th)</text>
+  <text x="618" y="196" class="note">• identity readable only with s → anonymity, unlinkable logins</text>
+  <text x="618" y="216" class="note">• es: a leaked PSK alone cannot impersonate the controller</text>
+  <text x="618" y="236" class="note">• ee: forward secrecy even if K and s leak later</text>
+  <text x="618" y="256" class="note">• unknown/locked ID: same path, dummy key, same ERROR</text>
+  <text x="618" y="276" class="note">• 5 failed logins per ID → exponential lockout + owner alert</text>
+
+  <line x1="32" y1="320" x2="1068" y2="320" class="sep" stroke="#d8dfeb"/>
+  <text x="32" y="355" class="heading">2. Signed command (every command; UNLOCK adds steps 1–4 and a PIN step-up)</text>
+  <text x="100" y="390" class="actor">User</text>
+  <text x="462" y="390" class="actor">Controller</text>
+  <text x="830" y="390" class="actor">Device</text>
+  <line x1="115" y1="402" x2="115" y2="700" class="line"/>
+  <line x1="495" y1="402" x2="495" y2="700" class="line"/>
+  <line x1="865" y1="402" x2="865" y2="700" class="line"/>
+  <path d="M120 422 L487 422" class="arrow"/>
+  <text x="168" y="415" class="msg">1. STEP_UP_PREPARE: UNLOCK (only)</text>
+  <path d="M502 454 L857 454" class="arrow"/>
+  <text x="560" y="447" class="msg">2. STEP_UP_CHALLENGE request</text>
+  <path d="M857 486 L502 486" class="arrow"/>
+  <text x="575" y="479" class="msg">3. random one-use challenge (30 s)</text>
+  <path d="M487 518 L120 518" class="arrow"/>
+  <text x="205" y="511" class="msg">4. challenge → user re-enters PIN</text>
+  <path d="M120 556 L487 556" class="arrow"/>
+  <text x="130" y="541" class="msg">5. COMMAND + Sig_user(user, device,</text>
+  <text x="130" y="574" class="note">command, nonce|challenge, issued_at)</text>
+  <path d="M502 600 L857 600" class="arrow"/>
+  <text x="520" y="593" class="msg">6. forwarded with the user's signature</text>
+  <path d="M857 640 L502 640" class="arrow"/>
+  <text x="590" y="633" class="msg">7. encrypted device result</text>
+  <path d="M487 672 L120 672" class="arrow"/>
+  <text x="200" y="665" class="msg">8. encrypted response</text>
+  <rect x="505" y="684" width="560" height="62" rx="10" class="box"/>
+  <text x="520" y="705" class="note">Controller: ACL + signature + freshness; logs {payload, signature} as evidence.</text>
+  <text x="520" y="723" class="note">Device: own ACL + the user's signature, 30 s window, one-time nonce — a compromised</text>
+  <text x="520" y="740" class="note">controller cannot forge or replay. Auto-relock after UNLOCK.</text>
+</svg>

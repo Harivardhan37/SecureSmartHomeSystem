@@ -1,0 +1,133 @@
+(* ProVerif model of the smarthome-v2 handshake (docs/PROTOCOL.md, common.py).
+
+   Run:   python formal/run_formal.py      (or: proverif formal/smarthome_handshake.pv)
+
+   Implementation message                       Model
+   ------------------------------------------------------------------------------
+   controller static key s, S = g^s (pinned)    new s; pkS = exp(g, s) is public
+   HELLO {N_p, X, Enc_es(role||id)}             out(c, (np, xp, senc(id, kid(es, np, xp))))
+   CHALLENGE {N_c, Y}         (no MAC)          out(c, (nc, yc))
+   FINISH {HMAC(mac_peer, "PEER", th)}          out(c, mac(kmp, tagPEER))
+   READY under k_c2p incl. HMAC(mac_ctrl,..)    out(c, senc((tagREADY, mac(kmc, tagCTRL)), kc2p))
+   keys = HKDF(K || es || ee, N_p||N_c, th)     kdf(psk, es, ee, tr, label)
+   first application message                    senc(s_peer, kp2c) / senc(s_ctrl, kc2p)
+
+   Modelled: unbounded parallel sessions, an active Dolev-Yao attacker, an honest
+   identity good_id (secret name, secret PSK), a compromised identity bad_id whose PSK
+   the attacker holds, and -- in phase 1, after all sessions -- disclosure of BOTH
+   good_id's PSK and the controller's static private key.
+
+   NOT modelled: AES-GCM sequence numbers / timestamps (unit tests), padding, session
+   expiry, signed commands and UNLOCK step-up, the dummy-key path for unknown
+   identities (an unknown identity simply gets no reply here), small-subgroup /
+   invalid-point attacks (abstract DH equation).  The stolen-config / offline PIN
+   guessing property is proved separately in formal/stolen_config.pv. *)
+
+free c: channel.
+
+free s_ctrl: bitstring [private].   (* first secret sent controller -> peer *)
+free s_peer: bitstring [private].   (* first secret sent peer -> controller *)
+free good_id: bitstring [private].  (* the honest identity is itself a secret: anonymity *)
+free bad_id: bitstring.
+
+const tagCTRL, tagPEER, tagREADY, tagC2P, tagP2C, tagMP, tagMC: bitstring.
+
+(* Diffie-Hellman *)
+const g: bitstring.
+fun exp(bitstring, bitstring): bitstring.
+equation forall x: bitstring, y: bitstring;
+  exp(exp(g, x), y) = exp(exp(g, y), x).
+
+(* HMAC-SHA256, HKDF-SHA256 (one-way) *)
+fun mac(bitstring, bitstring): bitstring.
+fun kdf(bitstring, bitstring, bitstring, bitstring, bitstring): bitstring.
+fun kid(bitstring, bitstring, bitstring): bitstring.
+
+(* AES-256-GCM as authenticated symmetric encryption *)
+fun senc(bitstring, bitstring): bitstring.
+reduc forall m: bitstring, k: bitstring; sdec(senc(m, k), k) = m.
+
+table keys(bitstring, bitstring).
+
+event PeerFinishes(bitstring, bitstring, bitstring, bitstring, bitstring).
+event PeerReady(bitstring, bitstring, bitstring, bitstring, bitstring).
+event CtrlAccepts(bitstring, bitstring, bitstring, bitstring, bitstring).
+
+(* --- sanity: the protocol can complete (these must come out FALSE) *)
+query np: bitstring, nc: bitstring, xp: bitstring, yc: bitstring;
+  event(CtrlAccepts(good_id, np, nc, xp, yc)).
+query np: bitstring, nc: bitstring, xp: bitstring, yc: bitstring;
+  event(PeerReady(good_id, np, nc, xp, yc)).
+
+(* --- Q1: controller authenticates peer (injective agreement) *)
+query np: bitstring, nc: bitstring, xp: bitstring, yc: bitstring;
+  inj-event(CtrlAccepts(good_id, np, nc, xp, yc))
+    ==> inj-event(PeerFinishes(good_id, np, nc, xp, yc)).
+
+(* --- Q2: peer authenticates controller + key confirmation (injective) *)
+query np: bitstring, nc: bitstring, xp: bitstring, yc: bitstring;
+  inj-event(PeerReady(good_id, np, nc, xp, yc))
+    ==> inj-event(CtrlAccepts(good_id, np, nc, xp, yc)).
+
+(* --- Q3: secrecy + forward secrecy: holds although PSK and static key leak in phase 1 *)
+query attacker(s_ctrl).
+query attacker(s_peer).
+
+(* --- Q4: anonymity: the honest identity never appears to the attacker while the
+       controller's static key is uncompromised (phase 0) *)
+query attacker(good_id) phase 0.
+
+let Peer(id: bitstring, psk: bitstring, pkS: bitstring) =
+  new np: bitstring;
+  new x: bitstring;
+  let xp = exp(g, x) in
+  let es = exp(pkS, x) in
+  let idct = senc(id, kid(es, np, xp)) in
+  out(c, (np, xp, idct));
+  in(c, (nc: bitstring, yc: bitstring));
+  let ee = exp(yc, x) in
+  let tr = (id, np, xp, idct, nc, yc) in
+  let kmp = kdf(psk, es, ee, tr, tagMP) in
+  let kmc = kdf(psk, es, ee, tr, tagMC) in
+  let kc2p = kdf(psk, es, ee, tr, tagC2P) in
+  let kp2c = kdf(psk, es, ee, tr, tagP2C) in
+  event PeerFinishes(id, np, nc, xp, yc);
+  out(c, mac(kmp, tagPEER));
+  in(c, ready: bitstring);
+  let (=tagREADY, conf: bitstring) = sdec(ready, kc2p) in
+  if conf = mac(kmc, tagCTRL) then
+  event PeerReady(id, np, nc, xp, yc);
+  if id = good_id then out(c, senc(s_peer, kp2c)).
+
+let Controller(s: bitstring) =
+  in(c, (np: bitstring, xp: bitstring, idct: bitstring));
+  let es = exp(xp, s) in
+  let id = sdec(idct, kid(es, np, xp)) in
+  get keys(=id, psk) in
+  new nc: bitstring;
+  new y: bitstring;
+  let yc = exp(g, y) in
+  out(c, (nc, yc));
+  let ee = exp(xp, y) in
+  let tr = (id, np, xp, idct, nc, yc) in
+  let kmp = kdf(psk, es, ee, tr, tagMP) in
+  let kmc = kdf(psk, es, ee, tr, tagMC) in
+  let kc2p = kdf(psk, es, ee, tr, tagC2P) in
+  in(c, f: bitstring);
+  if f = mac(kmp, tagPEER) then
+  event CtrlAccepts(id, np, nc, xp, yc);
+  out(c, senc((tagREADY, mac(kmc, tagCTRL)), kc2p));
+  if id = good_id then out(c, senc(s_ctrl, kc2p)).
+
+process
+  new s: bitstring;
+  new psk_good: bitstring;
+  new psk_bad: bitstring;
+  let pkS = exp(g, s) in
+  insert keys(good_id, psk_good);
+  insert keys(bad_id, psk_bad);
+  out(c, pkS);       (* the controller's static public key is public *)
+  out(c, psk_bad);   (* bad_id is compromised: the attacker can play bad_id itself *)
+  ( !Peer(good_id, psk_good, pkS)
+  | !Controller(s)
+  | (phase 1; out(c, (psk_good, s))) )   (* later disclosure of PSK + static key *)

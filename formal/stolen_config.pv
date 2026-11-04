@@ -1,0 +1,92 @@
+(* ProVerif model: a stolen user config file gives no OFFLINE PIN-guessing attack.
+
+   Run:   python formal/run_formal.py      (or: proverif formal/stolen_config.pv)
+
+   The user's PSK is stored as wrap(psk, pin) = (psk || seed) XOR Scrypt(pin, salt), with
+   no authentication tag and no public key in the file (common.wrap_user_secrets).
+   Wrapping without redundancy is modelled by the two cancellation equations below:
+   unwrapping with ANY pin yields a well-formed value, so a wrong guess is not
+   recognisable from the file alone.
+
+   The attacker receives the stolen file, can watch and manipulate unbounded honest
+   sessions of the victim, and may run its own sessions with the controller.
+   `weaksecret pin` asks whether, after all that, the attacker can tell the real PIN
+   from a random guess OFFLINE.  Online guesses (one accept/reject per handshake) are
+   the residual risk; the controller throttles them per identity.
+
+   Two broken variants in run_formal.py show why the design is ordered this way:
+   the controller proving first (MAC in CHALLENGE) and dropping the static-ephemeral
+   DH es both re-introduce an offline guessing attack. *)
+
+free c: channel.
+free good_id: bitstring.
+
+const tagCTRL, tagPEER, tagREADY, tagC2P, tagMP, tagMC: bitstring.
+
+const g: bitstring.
+fun exp(bitstring, bitstring): bitstring.
+equation forall x: bitstring, y: bitstring;
+  exp(exp(g, x), y) = exp(exp(g, y), x).
+
+fun mac(bitstring, bitstring): bitstring.
+fun kdf(bitstring, bitstring, bitstring, bitstring, bitstring): bitstring.
+fun kid(bitstring, bitstring, bitstring): bitstring.
+
+fun senc(bitstring, bitstring): bitstring.
+reduc forall m: bitstring, k: bitstring; sdec(senc(m, k), k) = m.
+
+(* tagless PIN wrap: XOR with a PIN-derived pad *)
+fun wrap(bitstring, bitstring): bitstring.
+fun unwrap(bitstring, bitstring): bitstring.
+equation forall k: bitstring, p: bitstring; unwrap(wrap(k, p), p) = k.
+equation forall k: bitstring, p: bitstring; wrap(unwrap(k, p), p) = k.
+
+free pin: bitstring [private].
+
+weaksecret pin.
+
+let Peer(cfg: bitstring, pkS: bitstring) =
+  let psk = unwrap(cfg, pin) in        (* the honest user types the right PIN *)
+  new np: bitstring;
+  new x: bitstring;
+  let xp = exp(g, x) in
+  let es = exp(pkS, x) in
+  let idct = senc(good_id, kid(es, np, xp)) in
+  out(c, (np, xp, idct));
+  in(c, (nc: bitstring, yc: bitstring));
+  let ee = exp(yc, x) in
+  let tr = (good_id, np, xp, idct, nc, yc) in
+  let kmp = kdf(psk, es, ee, tr, tagMP) in
+  let kmc = kdf(psk, es, ee, tr, tagMC) in
+  let kc2p = kdf(psk, es, ee, tr, tagC2P) in
+  out(c, mac(kmp, tagPEER));
+  in(c, ready: bitstring);
+  let (=tagREADY, conf: bitstring) = sdec(ready, kc2p) in
+  if conf = mac(kmc, tagCTRL) then 0.
+
+let Controller(s: bitstring, psk: bitstring) =
+  in(c, (np: bitstring, xp: bitstring, idct: bitstring));
+  let es = exp(xp, s) in
+  let id = sdec(idct, kid(es, np, xp)) in
+  if id = good_id then
+  new nc: bitstring;
+  new y: bitstring;
+  let yc = exp(g, y) in
+  let ee = exp(xp, y) in
+  let tr = (id, np, xp, idct, nc, yc) in
+  let kmp = kdf(psk, es, ee, tr, tagMP) in
+  let kmc = kdf(psk, es, ee, tr, tagMC) in
+  let kc2p = kdf(psk, es, ee, tr, tagC2P) in
+  out(c, (nc, yc));
+  in(c, f: bitstring);
+  if f = mac(kmp, tagPEER) then
+  out(c, senc((tagREADY, mac(kmc, tagCTRL)), kc2p)).
+
+process
+  new s: bitstring;
+  new psk: bitstring;
+  let pkS = exp(g, s) in
+  let cfg = wrap(psk, pin) in
+  out(c, pkS);
+  out(c, cfg);       (* the config file is stolen *)
+  ( !Peer(cfg, pkS) | !Controller(s, psk) )
